@@ -1,0 +1,759 @@
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <float.h>
+
+#define MAX_E   20
+#define MAX_D   10
+#define MAX_Y  200
+#define MAX_S  230
+#define INF    1e30
+#define EPS    1e-9
+#define BIGM   1e7
+#define MAX_IT 10000
+
+typedef struct {
+    int    num_estados, num_decisiones;
+    int    decision_valida[MAX_E][MAX_D];
+    double P[MAX_D][MAX_E][MAX_E];
+    double C[MAX_E][MAX_D];
+    char   nombre_estado[MAX_E][32];
+    char   nombre_decision[MAX_D][32];
+    int    es_maximizar;
+    int    max_iteraciones;
+} ModeloDecision;
+
+void sep_doble(void) {
+    printf("\n");
+    printf("================================================================\n");
+}
+void sep_simple(void) {
+    printf("----------------------------------------------------------------\n");
+}
+void titulo(const char *s) {
+    sep_doble();
+    printf("  %s\n", s);
+    sep_doble();
+}
+void subtitulo(const char *s) {
+    printf("\n  >> %s\n", s);
+    printf("  ");
+    int n = (int)strlen(s) + 5;
+    for (int i = 0; i < n; i++) putchar('-');
+    printf("\n");
+}
+
+void print_politica(ModeloDecision *p, int *pol, const char *lbl) {
+    printf("  %s: [ ", lbl);
+    for (int i = 0; i < p->num_estados; i++) {
+        printf("%s->%s", p->nombre_estado[i], p->nombre_decision[pol[i]]);
+        if (i < p->num_estados - 1) printf(" | ");
+    }
+    printf(" ]\n");
+}
+
+void leer_modelo(ModeloDecision *p) {
+    int i, j, k;
+    titulo("INGRESO DE DATOS");
+
+    printf("  Ingrese el numero total de estados del sistema  : ");
+    scanf("%d", &p->num_estados);
+    printf("  Ingrese el numero total de decisiones posibles  : ");
+    scanf("%d", &p->num_decisiones);
+
+    printf("\n  Asigne un nombre a cada estado del sistema:\n");
+    for (i = 0; i < p->num_estados; i++) {
+        printf("    Estado %d  --> nombre: ", i+1);
+        scanf("%31s", p->nombre_estado[i]);
+    }
+
+    printf("\n  Asigne un nombre a cada decision disponible:\n");
+    for (k = 0; k < p->num_decisiones; k++) {
+        printf("    Decision %d --> nombre: ", k+1);
+        scanf("%31s", p->nombre_decision[k]);
+    }
+
+    printf("\n  Indique que decisiones son validas en cada estado (1 = aplica, 0 = no aplica):\n");
+    for (i = 0; i < p->num_estados; i++) {
+        printf("\n  Estado [%s]:\n", p->nombre_estado[i]);
+        for (k = 0; k < p->num_decisiones; k++) {
+            printf("    La decision [%-12s] es valida aqui? (1/0): ", p->nombre_decision[k]);
+            scanf("%d", &p->decision_valida[i][k]);
+        }
+    }
+
+    printf("\n  Ingrese las probabilidades de transicion P(estado_siguiente | estado_actual, decision):\n");
+    printf("  (Recuerde: la suma de cada fila debe ser igual a 1.0)\n");
+    for (k = 0; k < p->num_decisiones; k++) {
+        int hay = 0;
+        for (i = 0; i < p->num_estados; i++) if (p->decision_valida[i][k]) { hay = 1; break; }
+        if (!hay) continue;
+        printf("\n  === Decision [%s] ===\n", p->nombre_decision[k]);
+        for (i = 0; i < p->num_estados; i++) {
+            if (!p->decision_valida[i][k]) continue;
+            printf("  Desde el estado [%s], probabilidad de ir a:\n", p->nombre_estado[i]);
+            for (j = 0; j < p->num_estados; j++) {
+                printf("    --> %-15s : P(%s | %s, %s) = ",
+                       p->nombre_estado[j],
+                       p->nombre_estado[j], p->nombre_estado[i], p->nombre_decision[k]);
+                scanf("%lf", &p->P[k][i][j]);
+            }
+        }
+    }
+
+    printf("\n  Verificando que las probabilidades de cada fila sumen 1...\n");
+    int ok = 1;
+    for (k = 0; k < p->num_decisiones; k++)
+        for (i = 0; i < p->num_estados; i++) {
+            if (!p->decision_valida[i][k]) continue;
+            double s = 0;
+            for (j = 0; j < p->num_estados; j++) s += p->P[k][i][j];
+            if (fabs(s - 1.0) > 1e-4) {
+                printf("  [ERROR] Decision [%s], Estado [%s]: la suma es %.4f (debe ser 1.0)\n",
+                       p->nombre_decision[k], p->nombre_estado[i], s);
+                ok = 0;
+            }
+        }
+    if (ok) printf("  Todas las filas suman correctamente 1.0  [OK]\n");
+
+    printf("\n  Seleccione el criterio de optimizacion:\n");
+    printf("    0 = Minimizar costos\n");
+    printf("    1 = Maximizar ganancias\n");
+    printf("  Su eleccion: "); scanf("%d", &p->es_maximizar);
+
+    printf("  Numero maximo de iteraciones permitidas (ingrese 0 para sin limite): ");
+    scanf("%d", &p->max_iteraciones);
+
+    printf("\n  Ingrese los %s asociados a cada par (estado, decision) valido:\n",
+           p->es_maximizar ? "valores de ganancia" : "valores de costo");
+    for (i = 0; i < p->num_estados; i++)
+        for (k = 0; k < p->num_decisiones; k++) {
+            if (!p->decision_valida[i][k]) continue;
+            printf("    %s al aplicar [%-12s] en estado [%-12s]: ",
+                   p->es_maximizar ? "Ganancia" : "Costo",
+                   p->nombre_decision[k], p->nombre_estado[i]);
+            scanf("%lf", &p->C[i][k]);
+        }
+
+    printf("\n  Todos los datos han sido ingresados exitosamente.\n");
+}
+
+int    es_mejor(ModeloDecision *p, double nv, double ac) {
+    return p->es_maximizar ? (nv > ac + EPS) : (nv < ac - EPS);
+}
+double peor_valor(ModeloDecision *p) { return p->es_maximizar ? -INF : INF; }
+
+int gauss_jordan(double A[][MAX_E+1], int n, double *x) {
+    int i, j, k;
+    double aug[MAX_E][MAX_E+1];
+    for (i = 0; i < n; i++)
+        for (j = 0; j <= n; j++) aug[i][j] = A[i][j];
+    for (k = 0; k < n; k++) {
+        int piv = k;
+        for (i = k+1; i < n; i++)
+            if (fabs(aug[i][k]) > fabs(aug[piv][k])) piv = i;
+        double tmp[MAX_E+1];
+        memcpy(tmp, aug[k], (n+1)*sizeof(double));
+        memcpy(aug[k], aug[piv], (n+1)*sizeof(double));
+        memcpy(aug[piv], tmp, (n+1)*sizeof(double));
+        if (fabs(aug[k][k]) < EPS) return 0;
+        double d = aug[k][k];
+        for (j = k; j <= n; j++) aug[k][j] /= d;
+        for (i = 0; i < n; i++) {
+            if (i == k) continue;
+            double f = aug[i][k];
+            for (j = k; j <= n; j++) aug[i][j] -= f * aug[k][j];
+        }
+    }
+    for (i = 0; i < n; i++) x[i] = aug[i][n];
+    return 1;
+}
+
+int vector_estacionario(ModeloDecision *p, int *pol, double *pi) {
+    int n = p->num_estados, i, j;
+    double A[MAX_E][MAX_E+1];
+    for (i = 0; i < n; i++) {
+        for (j = 0; j < n; j++) {
+            A[i][j] = p->P[pol[j]][j][i];
+            if (i == j) A[i][j] -= 1.0;
+        }
+        A[i][n] = 0.0;
+    }
+    for (j = 0; j < n; j++) A[n-1][j] = 1.0;
+    A[n-1][n] = 1.0;
+    return gauss_jordan(A, n, pi);
+}
+
+int evaluar_mp(ModeloDecision *p, int *pol, double *g, double *V) {
+    int n = p->num_estados, i, j;
+    double A[MAX_E][MAX_E+1];
+    for (i = 0; i < n; i++) {
+        int k = pol[i];
+        A[i][0] = 1.0;
+        for (j = 0; j < n-1; j++)
+            A[i][j+1] = (i == j ? 1.0 : 0.0) - p->P[k][i][j];
+        A[i][n] = p->C[i][k];
+    }
+    double x[MAX_E];
+    if (!gauss_jordan(A, n, x)) return 0;
+    *g = x[0];
+    for (j = 0; j < n-1; j++) V[j] = x[j+1];
+    V[n-1] = 0.0;
+    return 1;
+}
+
+int evaluar_desc(ModeloDecision *p, int *pol, double alpha, double *V) {
+    int n = p->num_estados, i, j;
+    double A[MAX_E][MAX_E+1];
+    for (i = 0; i < n; i++) {
+        int k = pol[i];
+        for (j = 0; j < n; j++)
+            A[i][j] = (i == j ? 1.0 : 0.0) - alpha * p->P[k][i][j];
+        A[i][n] = p->C[i][k];
+    }
+    return gauss_jordan(A, n, V);
+}
+
+void enumeracion_exhaustiva(ModeloDecision *p) {
+    titulo("METODO 1: ENUMERACION EXHAUSTIVA DE POLITICAS");
+
+    int n = p->num_estados, i, k, num = 0;
+    int politica_actual[MAX_E], politica_optima[MAX_E];
+    double valor_optimo = peor_valor(p);
+
+    for (i = 0; i < n; i++) {
+        politica_actual[i] = -1;
+        for (k = 0; k < p->num_decisiones; k++)
+            if (p->decision_valida[i][k]) { politica_actual[i] = k; break; }
+        if (politica_actual[i] < 0) { printf("  [ERROR] Estado %d sin decisiones.\n", i+1); return; }
+    }
+
+    int total = 1;
+    for (i = 0; i < n; i++) {
+        int cnt = 0;
+        for (k = 0; k < p->num_decisiones; k++) if (p->decision_valida[i][k]) cnt++;
+        total *= cnt;
+    }
+    printf("  Total de politicas: %d\n", total);
+
+    while (1) {
+        num++;
+        sep_simple();
+        printf("  Politica %d/%d: ", num, total);
+        for (i = 0; i < n; i++)
+            printf("[%s->%s] ", p->nombre_estado[i], p->nombre_decision[politica_actual[i]]);
+        printf("\n");
+
+        double pi[MAX_E];
+        if (!vector_estacionario(p, politica_actual, pi)) {
+            printf("  Sistema singular — se omite.\n");
+        } else {
+            double ec = 0;
+            printf("  pi = ( ");
+            for (i = 0; i < n; i++) {
+                printf("%.5f", pi[i]);
+                if (i < n-1) printf("  ");
+                ec += pi[i] * p->C[i][politica_actual[i]];
+            }
+            printf(" )\n");
+            printf("  %s = ", p->es_maximizar ? "G(C)" : "E(C)");
+            for (i = 0; i < n; i++) {
+                printf("%.5f*%.2f", pi[i], p->C[i][politica_actual[i]]);
+                if (i < n-1) printf(" + ");
+            }
+            printf(" = %.4f\n", ec);
+            if (es_mejor(p, ec, valor_optimo)) {
+                valor_optimo = ec;
+                memcpy(politica_optima, politica_actual, n * sizeof(int));
+            }
+        }
+
+        
+        int pos = n-1;
+        while (pos >= 0) {
+            int sig = politica_actual[pos] + 1;
+            while (sig < p->num_decisiones && !p->decision_valida[pos][sig]) sig++;
+            if (sig < p->num_decisiones) { politica_actual[pos] = sig; break; }
+            for (k = 0; k < p->num_decisiones; k++)
+                if (p->decision_valida[pos][k]) { politica_actual[pos] = k; break; }
+            pos--;
+        }
+        if (pos < 0) break;
+    }
+
+    sep_doble();
+    printf("  RESULTADO FINAL\n");
+    sep_doble();
+    print_politica(p, politica_optima, "Politica optima");
+    printf("  %s = %.4f\n",
+           p->es_maximizar ? "Ganancia maxima" : "Costo minimo", valor_optimo);
+}
+
+typedef struct {
+    int    m, n;
+    double T[MAX_S][MAX_S];
+    int    base[MAX_S];
+} Simp;
+
+void simp_init(Simp *s, int m, int n) {
+    s->m = m; s->n = n;
+    memset(s->T, 0, sizeof(s->T));
+}
+void simp_eq(Simp *s, int row, double *c, double rhs) {
+    int j, n = s->n, m = s->m;
+    for (j = 0; j < n; j++) s->T[row][j] = c[j];
+    s->T[row][n+row] = 1.0;
+    s->T[row][n+m]   = rhs;
+    s->base[row]     = n+row;
+}
+void simp_obj(Simp *s, double *obj, int maximizar) {
+    int i, j, n = s->n, m = s->m;
+    for (j = 0; j < n; j++)
+        s->T[m][j] = maximizar ? -obj[j] : obj[j];
+    for (j = n; j < n+m; j++) s->T[m][j] = BIGM;
+    s->T[m][n+m] = 0.0;
+    for (i = 0; i < m; i++) {
+        double f = s->T[m][s->base[i]];
+        if (fabs(f) < EPS) continue;
+        for (j = 0; j <= n+m; j++) s->T[m][j] -= f * s->T[i][j];
+    }
+}
+int simp_solve(Simp *s, double *sol) {
+    int it, i, j, m = s->m, n = s->n, tot = n+m;
+    for (it = 0; it < MAX_IT; it++) {
+        int ent = -1; double mn = EPS;
+        for (j = 0; j < tot; j++)
+            if (s->T[m][j] < -mn) { mn = -s->T[m][j]; ent = j; }
+        if (ent < 0) break;
+        int sal = -1; double mr = INF;
+        for (i = 0; i < m; i++) {
+            if (s->T[i][ent] < EPS) continue;
+            double r = s->T[i][tot] / s->T[i][ent];
+            if (r < mr - EPS) { mr = r; sal = i; }
+        }
+        if (sal < 0) return -1;
+        double pv = s->T[sal][ent];
+        for (j = 0; j <= tot; j++) s->T[sal][j] /= pv;
+        for (i = 0; i <= m; i++) {
+            if (i == sal) continue;
+            double f = s->T[i][ent];
+            if (fabs(f) < EPS) continue;
+            for (j = 0; j <= tot; j++) s->T[i][j] -= f * s->T[sal][j];
+        }
+        s->base[sal] = ent;
+    }
+    for (j = 0; j < tot; j++) sol[j] = 0.0;
+    for (i = 0; i < m; i++) sol[s->base[i]] = s->T[i][tot];
+    return 0;
+}
+
+void programacion_lineal(ModeloDecision *p) {
+    titulo(p->es_maximizar
+           ? "METODO 2: PROGRAMACION LINEAL (Maximizar)"
+           : "METODO 2: PROGRAMACION LINEAL (Minimizar)");
+
+    int n = p->num_estados, i, j, k, v;
+    int idx[MAX_E][MAX_D], vi[MAX_Y], vk[MAX_Y], nv = 0;
+    for (i = 0; i < n; i++)
+        for (k = 0; k < p->num_decisiones; k++) {
+            idx[i][k] = -1;
+            if (p->decision_valida[i][k]) { idx[i][k] = nv; vi[nv]=i; vk[nv]=k; nv++; }
+        }
+
+    subtitulo("PLANTEAMIENTO DEL PPL");
+    printf("  %s Z =\n", p->es_maximizar ? "Max" : "Min");
+    for (v = 0; v < nv; v++)
+        printf("    %c %.2f * Y(%s,%s)\n",
+               v==0?' ':'+',
+               p->C[vi[v]][vk[v]], p->nombre_estado[vi[v]], p->nombre_decision[vk[v]]);
+
+    printf("\n  s.a.\n");
+    printf("  [R0] ");
+    for (v = 0; v < nv; v++) {
+        if (v > 0) printf(" + ");
+        printf("Y(%d,%d)", vi[v]+1, vk[v]+1);
+    }
+    printf(" = 1\n");
+
+    for (j = 0; j < n; j++) {
+        printf("  [R%d] ", j+1);
+        int prim = 1;
+        for (k = 0; k < p->num_decisiones; k++) {
+            if (!p->decision_valida[j][k]) continue;
+            if (!prim) printf(" + ");
+            printf("Y(%d,%d)", j+1, k+1);
+            prim = 0;
+        }
+        for (v = 0; v < nv; v++) {
+            double pij = p->P[vk[v]][vi[v]][j];
+            if (fabs(pij) < EPS) continue;
+            printf(" - %.4g*Y(%d,%d)", pij, vi[v]+1, vk[v]+1);
+        }
+        printf(" = 0\n");
+    }
+    printf("  Y(i,k) >= 0\n");
+
+    subtitulo("RESOLUCION (Simplex Big-M)");
+    int nr = 1 + n;
+    Simp S; simp_init(&S, nr, nv);
+    double row[MAX_Y];
+
+    for (v = 0; v < nv; v++) row[v] = 1.0;
+    simp_eq(&S, 0, row, 1.0);
+    for (j = 0; j < n; j++) {
+        memset(row, 0, nv*sizeof(double));
+        for (v = 0; v < nv; v++) {
+            if (vi[v] == j) row[v] += 1.0;
+            row[v] -= p->P[vk[v]][vi[v]][j];
+        }
+        simp_eq(&S, j+1, row, 0.0);
+    }
+    double obj[MAX_Y];
+    for (v = 0; v < nv; v++) obj[v] = p->C[vi[v]][vk[v]];
+    simp_obj(&S, obj, p->es_maximizar);
+
+    double sol[MAX_S];
+    if (simp_solve(&S, sol) != 0) {
+        printf("  [ERROR] Problema no acotado.\n"); return;
+    }
+
+    subtitulo("SOLUCION");
+    double Z = 0;
+    printf("  %-30s  %10s\n", "Variable", "Valor");
+    sep_simple();
+    for (v = 0; v < nv; v++) {
+        printf("  Y(%d,%d) = %10.6f\n", vi[v]+1, vk[v]+1, sol[v]);
+        Z += p->C[vi[v]][vk[v]] * sol[v];
+    }
+    sep_simple();
+    printf("  Z* = %.4f\n\n", Z);
+
+    int pol_opt[MAX_E];
+    printf("  Politica optima:\n");
+    for (i = 0; i < n; i++) {
+        double sm = 0;
+        for (k = 0; k < p->num_decisiones; k++) if (p->decision_valida[i][k]) sm += sol[idx[i][k]];
+        pol_opt[i] = 0; double best = -INF;
+        for (k = 0; k < p->num_decisiones; k++) {
+            if (!p->decision_valida[i][k]) continue;
+            double D = (sm > EPS) ? sol[idx[i][k]] / sm : 0.0;
+            if (D > best) { best = D; pol_opt[i] = k; }
+        }
+        printf("    E%d -> D%d  Y=%.6f\n", i+1, pol_opt[i]+1, sol[idx[i][pol_opt[i]]]);
+    }
+    sep_doble();
+    printf("  Pol optima: [ ");
+    for (i=0;i<n;i++) { printf("E%d->D%d",i+1,pol_opt[i]+1); if(i<n-1) printf(" | "); }
+    printf(" ]\n");
+    printf("  Z* = %.4f\n", Z);
+}
+
+void mejoramiento_politicas(ModeloDecision *p) {
+    titulo("METODO 3: MEJORAMIENTO DE POLITICAS");
+
+    
+    int n = p->num_estados, i, k, iter = 0;
+    int pol[MAX_E], pol_new[MAX_E];
+    double V[MAX_E], g;
+
+    printf("  Ingrese la politica inicial (numero de decision del 1 al %d por cada estado):\n", p->num_decisiones);
+    for (i = 0; i < n; i++) {
+        int d;
+        do { printf("    Decision inicial para el estado %d [%s]: ", i+1, p->nombre_estado[i]); scanf("%d", &d); d--; }
+        while (d < 0 || d >= p->num_decisiones || !p->decision_valida[i][d]);
+        pol[i] = d;
+    }
+
+    print_politica(p, pol, "Politica inicial R0");
+    printf("  Maximo de iteraciones configurado: %d\n", p->max_iteraciones);
+
+    while (1) {
+        iter++;
+        sep_doble();
+        printf("  ITERACION %d\n", iter);
+        sep_doble();
+
+        subtitulo("PASO 1 — Valor de la politica");
+        printf("  g + Vi - sum_j pij(k)*Vj = C(i,k)  [V_n-1 = 0]\n\n");
+        for (i = 0; i < n; i++) {
+            int k2 = pol[i], j2;
+            printf("  Ec.%d [%s|%s]:  g", i+1, p->nombre_estado[i], p->nombre_decision[k2]);
+            for (j2 = 0; j2 < n-1; j2++) {
+                double c = (i==j2 ? 1.0 : 0.0) - p->P[k2][i][j2];
+                if (fabs(c) < EPS) continue;
+                printf(" %+.4g*V_%s", c, p->nombre_estado[j2]);
+            }
+            printf("  =  %.2f\n", p->C[i][k2]);
+        }
+        if (!evaluar_mp(p, pol, &g, V)) { printf("  [ERROR]\n"); return; }
+        printf("\n  g = %.6f\n", g);
+        for (i = 0; i < n; i++) printf("  V_%s = %.6f\n", p->nombre_estado[i], V[i]);
+
+        subtitulo("PASO 2 — Mejoramiento");
+        printf("  %s: C(i,k) + sum_j pij(k)*Vj - Vi\n\n",
+               p->es_maximizar ? "Maximizar" : "Minimizar");
+
+        int cambio = 0;
+        for (i = 0; i < n; i++) {
+            double mejor = peor_valor(p); int mejor_k = -1;
+            printf("  Estado [%s]:\n", p->nombre_estado[i]);
+            for (k = 0; k < p->num_decisiones; k++) {
+                if (!p->decision_valida[i][k]) continue;
+                int j2; double val = p->C[i][k];
+                int prim = 1;
+                printf("    [%s]: %.2f + (", p->nombre_decision[k], p->C[i][k]);
+                for (j2 = 0; j2 < n; j2++) {
+                    if (fabs(p->P[k][i][j2]) < EPS) continue;
+                    if (!prim) printf(" + ");
+                    printf("%.4g*%.4g", p->P[k][i][j2], V[j2]);
+                    val += p->P[k][i][j2] * V[j2];
+                    prim = 0;
+                }
+                val -= V[i];
+                printf(") - %.4g = %.4f", V[i], val);
+                if (es_mejor(p, val, mejor)) { mejor = val; mejor_k = k; }
+                if (mejor_k == k) printf("  <-- %s", p->es_maximizar ? "MAX" : "MIN");
+                printf("\n");
+            }
+            pol_new[i] = mejor_k;
+            if (mejor_k != pol[i]) cambio = 1;
+        }
+
+        printf("\n");
+        print_politica(p, pol,     "  R_n  ");
+        print_politica(p, pol_new, "  R_n+1");
+        memcpy(pol, pol_new, n * sizeof(int));
+
+        if (!cambio) { printf("\n  >>> Convergencia: R_n+1 = R_n\n"); break; }
+        if (p->max_iteraciones > 0 && iter >= p->max_iteraciones) {
+            printf("\n  >>> Limite de %d iteraciones.\n", p->max_iteraciones); break;
+        }
+        printf("  >>> Politica cambio, continuar...\n");
+    }
+
+    sep_doble();
+    printf("  RESULTADO FINAL\n");
+    sep_doble();
+    print_politica(p, pol, "opt");
+    printf("  g = %.4f\n", g);
+}
+
+void mejoramiento_descuento(ModeloDecision *p) {
+    titulo("METODO 4: MEJORAMIENTO DE POLITICAS CON DESCUENTO");
+
+    int n = p->num_estados, i, k, iter = 0;
+    int pol[MAX_E], pol_new[MAX_E];
+    double V[MAX_E];
+
+    
+    printf("  Ingrese la politica inicial (numero de decision del 1 al %d por cada estado):\n", p->num_decisiones);
+    for (i = 0; i < n; i++) {
+        int d;
+        do { printf("    Decision inicial para el estado %d [%s]: ", i+1, p->nombre_estado[i]); scanf("%d", &d); d--; }
+        while (d < 0 || d >= p->num_decisiones || !p->decision_valida[i][d]);
+        pol[i] = d;
+    }
+
+    double alpha;
+    printf("\n  Ingrese el factor de descuento alpha (valor entre 0 y 1, exclusivo): ");
+    scanf("%lf", &alpha);
+    printf("  alpha = %.4f  (equivale a una tasa i = %.2f%%)\n\n",
+           alpha, (1.0/alpha - 1.0)*100.0);
+
+    print_politica(p, pol, "Politica inicial R0");
+
+    while (1) {
+        iter++;
+        sep_doble();
+        printf("  ITERACION %d\n", iter);
+        sep_doble();
+
+        subtitulo("PASO 1 — Valor con descuento");
+        printf("  Vi - alpha*sum_j pij(k)*Vj = C(i,k)  alpha=%.4f\n\n", alpha);
+        for (i = 0; i < n; i++) {
+            int k2 = pol[i], j2;
+            printf("  Ec.%d [%s|%s]:  V_%s",
+                   i+1, p->nombre_estado[i], p->nombre_decision[k2], p->nombre_estado[i]);
+            for (j2 = 0; j2 < n; j2++) {
+                if (j2 == i) continue;
+                double c = -alpha * p->P[k2][i][j2];
+                if (fabs(c) < EPS) continue;
+                printf(" %+.4g*V_%s", c, p->nombre_estado[j2]);
+            }
+            printf("  =  %.2f\n", p->C[i][k2]);
+        }
+        if (!evaluar_desc(p, pol, alpha, V)) { printf("  [ERROR]\n"); return; }
+        printf("\n");
+        for (i = 0; i < n; i++) printf("  V_%s = %.6f\n", p->nombre_estado[i], V[i]);
+
+        subtitulo("PASO 2 — Mejoramiento");
+        printf("  %s: C(i,k) + alpha*sum_j pij(k)*Vj\n\n",
+               p->es_maximizar ? "Maximizar" : "Minimizar");
+
+        int cambio = 0;
+        for (i = 0; i < n; i++) {
+            double mejor = peor_valor(p); int mejor_k = -1;
+            printf("  Estado [%s]:\n", p->nombre_estado[i]);
+            for (k = 0; k < p->num_decisiones; k++) {
+                if (!p->decision_valida[i][k]) continue;
+                int j2; double val = p->C[i][k];
+                int prim = 1;
+                printf("    [%s]: %.2f + %.4f*(", p->nombre_decision[k], p->C[i][k], alpha);
+                for (j2 = 0; j2 < n; j2++) {
+                    if (fabs(p->P[k][i][j2]) < EPS) continue;
+                    if (!prim) printf("+");
+                    printf("%.4g*%.4g", p->P[k][i][j2], V[j2]);
+                    val += alpha * p->P[k][i][j2] * V[j2];
+                    prim = 0;
+                }
+                printf(") = %.4f", val);
+                if (es_mejor(p, val, mejor)) { mejor = val; mejor_k = k; }
+                if (mejor_k == k) printf("  <-- %s", p->es_maximizar ? "MAX" : "MIN");
+                printf("\n");
+            }
+            pol_new[i] = mejor_k;
+            if (mejor_k != pol[i]) cambio = 1;
+        }
+
+        printf("\n");
+        print_politica(p, pol,     "  R_n  ");
+        print_politica(p, pol_new, "  R_n+1");
+        memcpy(pol, pol_new, n * sizeof(int));
+
+        if (!cambio) { printf("\n  >>> Convergencia.\n"); break; }
+        if (p->max_iteraciones > 0 && iter >= p->max_iteraciones) {
+            printf("\n  >>> Limite de %d iteraciones.\n", p->max_iteraciones); break;
+        }
+        printf("  >>> Continuar...\n");
+    }
+
+    sep_doble();
+    printf("  RESULTADO FINAL\n");
+    sep_doble();
+    print_politica(p, pol, "opt");
+    printf("  alpha=%.4f\n", alpha);
+    for (i=0;i<n;i++) printf("  V_e%d=%.4f\n", i+1, V[i]);
+}
+
+void aproximaciones_sucesivas(ModeloDecision *p) {
+    titulo("METODO 5: APROXIMACIONES SUCESIVAS");
+
+    double alpha, eps;
+    printf("  Ingrese el factor de descuento alpha (0 < alpha < 1): "); scanf("%lf", &alpha);
+    printf("  Ingrese la tolerancia de convergencia epsilon (ej. 0.0001)  : "); scanf("%lf", &eps);
+    printf("  alpha = %.4f   epsilon = %.6f\n", alpha, eps);
+
+    int N = p->max_iteraciones > 0 ? p->max_iteraciones : 100;
+    printf("  Max. iteraciones: %d\n", N);
+
+    int n = p->num_estados, i, k, iter;
+    double V[MAX_E], Vn[MAX_E];
+    int pol[MAX_E];
+
+    
+    sep_simple();
+    printf("  n=1: Vi^1 = %s{ C(i,k) }\n", p->es_maximizar ? "max" : "min");
+    sep_simple();
+    for (i = 0; i < n; i++) {
+        double mejor = peor_valor(p); int mk = -1;
+        for (k = 0; k < p->num_decisiones; k++) {
+            if (!p->decision_valida[i][k]) continue;
+            printf("    [%s] k=%-10s C=%.2f\n", p->nombre_estado[i], p->nombre_decision[k], p->C[i][k]);
+            if (es_mejor(p, p->C[i][k], mejor)) { mejor = p->C[i][k]; mk = k; }
+        }
+        V[i] = mejor; pol[i] = mk;
+        printf("    => V_%s = %.4f  (k=%s)\n\n", p->nombre_estado[i], V[i], p->nombre_decision[mk]);
+    }
+
+    
+    for (iter = 2; iter <= N; iter++) {
+        sep_simple();
+        printf("  n=%d:\n", iter);
+        double max_diff = 0;
+        for (i = 0; i < n; i++) {
+            double mejor = peor_valor(p); int mk = -1;
+            printf("  Estado [%s]:\n", p->nombre_estado[i]);
+            for (k = 0; k < p->num_decisiones; k++) {
+                if (!p->decision_valida[i][k]) continue;
+                int j2; double val = p->C[i][k];
+                int prim = 1;
+                printf("    [%s]: %.2f + %.4f*(", p->nombre_decision[k], p->C[i][k], alpha);
+                for (j2 = 0; j2 < n; j2++) {
+                    if (fabs(p->P[k][i][j2]) < EPS) continue;
+                    if (!prim) printf("+");
+                    printf("%.4g*%.4g", p->P[k][i][j2], V[j2]);
+                    val += alpha * p->P[k][i][j2] * V[j2];
+                    prim = 0;
+                }
+                printf(") = %.4f", val);
+                if (es_mejor(p, val, mejor)) { mejor = val; mk = k; }
+                if (mk == k) printf("  <-- %s", p->es_maximizar ? "MAX" : "MIN");
+                printf("\n");
+            }
+            Vn[i] = mejor; pol[i] = mk;
+            double d = fabs(Vn[i] - V[i]);
+            if (d > max_diff) max_diff = d;
+            printf("  => V_%s = %.6f  (antes=%.6f  diff=%.6f)\n\n",
+                   p->nombre_estado[i], Vn[i], V[i], d);
+        }
+        for (i = 0; i < n; i++) V[i] = Vn[i];
+        printf("  max|Vi^n - Vi^n-1| = %.8f\n", max_diff);
+        printf("  Politica: ");
+        for (i = 0; i < n; i++) printf("[%s->%s] ", p->nombre_estado[i], p->nombre_decision[pol[i]]);
+        printf("\n");
+        if (max_diff < eps) { printf("\n  >>> Convergencia en n=%d\n", iter); break; }
+        if (iter >= N)      { printf("\n  >>> Limite alcanzado.\n"); break; }
+    }
+
+    sep_doble();
+    printf("  RESULTADO\n");
+    sep_doble();
+    print_politica(p, pol, "aprox");
+    for (i=0;i<n;i++) printf("  V_e%d=%.4f\n", i+1, V[i]);
+}
+
+int main(void) {
+    ModeloDecision modelo;
+    memset(&modelo, 0, sizeof(modelo));
+
+    sep_doble();
+    printf("  PROYECTO DE PROCESOS ESTOCASTICOS\n");
+    sep_doble();
+    printf("  INTEGRANTES:\n");
+    printf("    - Hernandez Montes Victoria del Carmen\n");
+    printf("    - Estefani Michelle Lira\n");
+    printf("    - Leonardo Escareno\n");
+    sep_doble();
+
+    leer_modelo(&modelo);
+
+    int op;
+    do {
+        sep_doble();
+        printf("  MENU PRINCIPAL\n");
+        sep_doble();
+        printf("  1. Enumeracion Exhaustiva\n");
+        printf("  2. Programacion Lineal (Simplex)\n");
+        printf("  3. Mejoramiento de Politicas\n");
+        printf("  4. Mejoramiento con Descuento\n");
+        printf("  5. Aproximaciones Sucesivas\n");
+        printf("  0. Salir\n");
+        sep_simple();
+        printf("  Opcion: "); scanf("%d", &op);
+
+        switch (op) {
+            case 1: enumeracion_exhaustiva(&modelo);  break;
+            case 2: programacion_lineal(&modelo);     break;
+            case 3: mejoramiento_politicas(&modelo);  break;
+            case 4: mejoramiento_descuento(&modelo);  break;
+            case 5: aproximaciones_sucesivas(&modelo); break;
+            case 0: printf("  Hasta luego.\n");  break;
+            default: printf("  Opcion invalida.\n");
+        }
+    } while (op != 0);
+
+    return 0;
+}
